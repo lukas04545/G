@@ -13,6 +13,7 @@ from config import AppConfig, DetectorConfig, ModelSize, VideoConfig
 from detector import YOLODetector
 from utils import FPSCounter, draw_overlay, setup_logging
 from video import SourceType, VideoSource, VideoWriter
+from stream import bus, serve_in_background
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,18 @@ def build_parser() -> argparse.ArgumentParser:
     out.add_argument("--no-labels", action="store_true", help="Hide class labels")
     out.add_argument("--no-confidence", action="store_true", help="Hide confidence scores")
 
+    web = p.add_argument_group("Web streaming")
+    web.add_argument(
+        "--web", action="store_true",
+        help="Serve MJPEG stream at http://<ip>:<port>/ (view on phone/browser)",
+    )
+    web.add_argument("--web-port", type=int, default=8080, metavar="PORT", help="HTTP port")
+    web.add_argument("--web-host", default="0.0.0.0", metavar="HOST", help="Bind address")
+    web.add_argument(
+        "--jpeg-quality", type=int, default=80, metavar="1-100",
+        help="JPEG compression quality for the web stream",
+    )
+
     misc = p.add_argument_group("Misc")
     misc.add_argument(
         "--log-level", default="INFO",
@@ -89,6 +102,8 @@ def _validate(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None
 
 
 def _build_config(args: argparse.Namespace) -> AppConfig:
+    # In web-only mode suppress the local OpenCV window automatically
+    display = not args.no_display and not (args.web and not hasattr(args, "_force_display"))
     return AppConfig(
         detector=DetectorConfig(
             model_size=ModelSize(args.model),
@@ -100,7 +115,7 @@ def _build_config(args: argparse.Namespace) -> AppConfig:
         video=VideoConfig(
             source=args.source,
             output_path=args.output,
-            display=not args.no_display,
+            display=display,
         ),
         log_level=args.log_level,
         show_fps=not args.no_fps,
@@ -113,7 +128,8 @@ def _build_config(args: argparse.Namespace) -> AppConfig:
 # Processing loop
 # ---------------------------------------------------------------------------
 
-def run(config: AppConfig) -> int:
+def run(config: AppConfig, web: bool = False, web_host: str = "0.0.0.0",
+        web_port: int = 8080, jpeg_quality: int = 80) -> int:
     """Main processing loop. Returns POSIX exit code."""
     # --- Detector ---
     try:
@@ -138,6 +154,10 @@ def run(config: AppConfig) -> int:
             logger.exception("Cannot open output writer")
             source.release()
             return 1
+
+    # --- Web streaming server ---
+    if web:
+        serve_in_background(host=web_host, port=web_port, jpeg_quality=jpeg_quality)
 
     # --- Warmup ---
     # (done after source is open so we know actual frame size)
@@ -177,6 +197,9 @@ def run(config: AppConfig) -> int:
 
             if writer:
                 writer.write(annotated)
+
+            if web:
+                bus.publish(annotated, quality=jpeg_quality)
 
             if config.video.display:
                 cv2.imshow(window, annotated)
@@ -220,7 +243,13 @@ def main() -> None:
     setup_logging(args.log_level)
     _validate(args, parser)
     config = _build_config(args)
-    sys.exit(run(config))
+    sys.exit(run(
+        config,
+        web=args.web,
+        web_host=args.web_host,
+        web_port=args.web_port,
+        jpeg_quality=args.jpeg_quality,
+    ))
 
 
 if __name__ == "__main__":
