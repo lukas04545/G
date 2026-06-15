@@ -34,7 +34,12 @@ class YoloDetector(
 
     fun load() {
         val bytes = context.assets.open(modelFileName).readBytes()
-        val opts  = OrtSession.SessionOptions().apply { setIntraOpNumThreads(4) }
+        val opts  = OrtSession.SessionOptions().apply {
+            setIntraOpNumThreads(4)
+            // Delegate conv layers to the device NPU/APU via NNAPI; falls back to CPU for
+            // unsupported ops so the session always succeeds.
+            runCatching { addNnapi() }
+        }
         session   = env.createSession(bytes, opts)
         inputName = session.inputNames.iterator().next()
         val shape = (session.inputInfo[inputName]!!.info as TensorInfo).shape
