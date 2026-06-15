@@ -89,6 +89,45 @@ class YoloDetector(
             .also { tensor.close(); result.close() }
     }
 
+    /**
+     * Tiles the image along its long axis and runs [detect] on each tile, then merges
+     * results with a global NMS pass. For a tall phone screen this gives ~2× better
+     * effective resolution compared to squishing the full screen into one 640-px square.
+     */
+    fun detectTiled(bitmap: Bitmap): List<Detection> {
+        val W = bitmap.width
+        val H = bitmap.height
+        val tileSize = minOf(W, H)
+        val isPortrait = H > W
+        val longLen = if (isPortrait) H else W
+
+        if (longLen <= tileSize) return detect(bitmap)
+
+        // 2 tiles for ratio ≤ 2.5, 3 tiles for taller screens
+        val nTiles = if (longLen.toFloat() / tileSize <= 2.5f) 2 else 3
+        val allDets = mutableListOf<Detection>()
+
+        for (ti in 0 until nTiles) {
+            val start = ((longLen - tileSize) * ti.toFloat() / (nTiles - 1)).toInt()
+            val tile = if (isPortrait)
+                Bitmap.createBitmap(bitmap, 0, start, W, tileSize)
+            else
+                Bitmap.createBitmap(bitmap, start, 0, tileSize, H)
+
+            val offX = if (isPortrait) 0f else start.toFloat()
+            val offY = if (isPortrait) start.toFloat() else 0f
+            detect(tile).forEach { det ->
+                allDets += det.copy(bbox = RectF(
+                    det.bbox.left  + offX, det.bbox.top    + offY,
+                    det.bbox.right + offX, det.bbox.bottom + offY,
+                ))
+            }
+            tile.recycle()
+        }
+
+        return nms(allDets)
+    }
+
     fun detect(bitmap: Bitmap): List<Detection> {
         val origW = bitmap.width.toFloat()
         val origH = bitmap.height.toFloat()

@@ -202,7 +202,7 @@ class OverlayService : Service() {
                             Bitmap.createBitmap(raw, 0, 0, screenW, screenH).also { raw.recycle() }
                         else raw
 
-                        val dets = detector!!.detect(frame)
+                        val dets = detector!!.detectTiled(frame)
                         frame.recycle()
                         overlayView?.update(dets, screenW, screenH)
                     }.onFailure { Log.w(TAG, "frame error: ${it.message}") }
