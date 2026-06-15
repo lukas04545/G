@@ -244,7 +244,7 @@ class MainActivity : AppCompatActivity() {
             detector = null
             try {
                 withContext(Dispatchers.Main) {
-                    binding.statsText.text = "Compiling for APU… (first launch only, please wait)"
+                    binding.statsText.text = "Loading model…"
                 }
                 val d = YoloDetector(
                     applicationContext,

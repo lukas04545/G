@@ -7,7 +7,6 @@ import ai.onnxruntime.TensorInfo
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.RectF
-import java.io.File
 import java.nio.FloatBuffer
 
 class YoloDetector(
@@ -34,17 +33,15 @@ class YoloDetector(
     // -------------------------------------------------------------------------
 
     fun load() {
-        // Copy model to internal storage so NNAPI can use the file path as a stable
-        // cache key — loading from a byte array bypasses the OS compilation cache.
-        val modelFile = File(context.filesDir, modelFileName)
-        if (!modelFile.exists()) {
-            context.assets.open(modelFileName).use { it.copyTo(modelFile.outputStream()) }
-        }
-        val opts = OrtSession.SessionOptions().apply {
+        val bytes = context.assets.open(modelFileName).readBytes()
+        val opts  = OrtSession.SessionOptions().apply {
             setIntraOpNumThreads(4)
-            runCatching { addNnapi() }
+            // XNNPACK: optimised ARM NEON kernels — pure CPU, no data-transfer overhead.
+            // Outperforms NNAPI on YOLOv8 because NNAPI can't handle all ops (Reshape/
+            // Transpose bounce back to CPU, killing throughput with NNAPI).
+            runCatching { addXnnpack(emptyMap()) }
         }
-        session   = env.createSession(modelFile.absolutePath, opts)
+        session   = env.createSession(bytes, opts)
         inputName = session.inputNames.iterator().next()
         val shape = (session.inputInfo[inputName]!!.info as TensorInfo).shape
         inputSize = shape[2].toInt()
