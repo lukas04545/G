@@ -9,23 +9,15 @@ import android.graphics.Bitmap
 import android.graphics.RectF
 import java.nio.FloatBuffer
 
-/**
- * On-device YOLOv8 detector backed by ONNX Runtime.
- *
- * Supports any input resolution — the size is read from the ONNX model itself
- * after loading, so switching between yolov8n.onnx (640) and yolov8n_fast.onnx
- * (320) just requires changing [modelFileName].
- */
 class YoloDetector(
     private val context: Context,
-    val modelFileName: String   = "yolov8n.onnx",
+    val modelFileName: String      = "yolov8n.onnx",
     val confidenceThreshold: Float = 0.5f,
-    val iouThreshold: Float     = 0.45f,
-    val personOnly: Boolean     = false,
+    val iouThreshold: Float        = 0.45f,
+    val personOnly: Boolean        = false,
 ) : AutoCloseable {
 
     companion object {
-        // COCO class index for "person"
         const val CLASS_PERSON = 0
         private const val NUM_CLASSES = 80
     }
@@ -45,32 +37,22 @@ class YoloDetector(
         val opts  = OrtSession.SessionOptions().apply { setIntraOpNumThreads(4) }
         session   = env.createSession(bytes, opts)
         inputName = session.inputNames.iterator().next()
-
-        // Read actual input resolution from the model (shape = [1, 3, H, W])
         val shape = (session.inputInfo[inputName]!!.info as TensorInfo).shape
-        inputSize = shape[2].toInt()   // H == W for square YOLO models
+        inputSize = shape[2].toInt()
     }
 
     // -------------------------------------------------------------------------
     // Inference
     // -------------------------------------------------------------------------
 
-    /**
-     * Like [detect] but ignores [confidenceThreshold] — returns the single
-     * highest-scoring detection per class so the UI can show raw model scores.
-     * Used in debug mode to diagnose "model sees nothing" situations.
-     */
     fun debugTopScores(bitmap: Bitmap): List<Detection> {
-        val origW = bitmap.width.toFloat()
-        val origH = bitmap.height.toFloat()
-        val tensor = preprocess(bitmap)
+        val (tensor, lb) = preprocess(bitmap)
         val result = session.run(mapOf(inputName to tensor))
         val raw    = (result[0].value as Array<*>)[0] as Array<*>
         val numFeat = raw.size
         val numDet  = (raw[0] as FloatArray).size
 
-        // Best score per class across all anchor points
-        val bestPerClass = mutableMapOf<Int, Pair<Float, FloatArray>>() // classId → (score, xywh)
+        val bestPerClass = mutableMapOf<Int, Pair<Float, FloatArray>>()
         for (i in 0 until numDet) {
             for (c in 4 until numFeat) {
                 val score = (raw[c] as FloatArray)[i]
@@ -85,17 +67,17 @@ class YoloDetector(
             }
         }
 
-        val scaleX = origW / inputSize
-        val scaleY = origH / inputSize
+        val origW = bitmap.width.toFloat()
+        val origH = bitmap.height.toFloat()
         return bestPerClass.entries
             .sortedByDescending { it.value.first }
             .take(10)
             .map { (cls, pair) ->
                 val (score, box) = pair
-                val x1 = (box[0] - box[2] / 2f) * scaleX
-                val y1 = (box[1] - box[3] / 2f) * scaleY
-                val x2 = (box[0] + box[2] / 2f) * scaleX
-                val y2 = (box[1] + box[3] / 2f) * scaleY
+                val x1 = ((box[0] - box[2] / 2f) - lb.padX) / lb.scale
+                val y1 = ((box[1] - box[3] / 2f) - lb.padY) / lb.scale
+                val x2 = ((box[0] + box[2] / 2f) - lb.padX) / lb.scale
+                val y2 = ((box[1] + box[3] / 2f) - lb.padY) / lb.scale
                 Detection(
                     bbox       = RectF(x1.coerceAtLeast(0f), y1.coerceAtLeast(0f),
                                        x2.coerceAtMost(origW), y2.coerceAtMost(origH)),
@@ -111,13 +93,13 @@ class YoloDetector(
         val origW = bitmap.width.toFloat()
         val origH = bitmap.height.toFloat()
 
-        val tensor = preprocess(bitmap)
+        val (tensor, lb) = preprocess(bitmap)
         val result = session.run(mapOf(inputName to tensor))
 
-        // Output shape: [1, 84, N]  where N = (inputSize/8)² + (inputSize/16)² + (inputSize/32)²
+        // Output shape: [1, 84, N]
         val raw     = (result[0].value as Array<*>)[0] as Array<*>
-        val numFeat = raw.size                           // 84
-        val numDet  = (raw[0] as FloatArray).size        // 8400 for 640, 2100 for 320
+        val numFeat = raw.size
+        val numDet  = (raw[0] as FloatArray).size
 
         val detections = mutableListOf<Detection>()
 
@@ -137,12 +119,11 @@ class YoloDetector(
             if (maxScore < confidenceThreshold) continue
             if (personOnly && classId != CLASS_PERSON) continue
 
-            val scaleX = origW / inputSize
-            val scaleY = origH / inputSize
-            val x1 = (cx - w / 2f) * scaleX
-            val y1 = (cy - h / 2f) * scaleY
-            val x2 = (cx + w / 2f) * scaleX
-            val y2 = (cy + h / 2f) * scaleY
+            // Undo letterbox: subtract padding, divide by scale
+            val x1 = ((cx - w / 2f) - lb.padX) / lb.scale
+            val y1 = ((cy - h / 2f) - lb.padY) / lb.scale
+            val x2 = ((cx + w / 2f) - lb.padX) / lb.scale
+            val y2 = ((cy + h / 2f) - lb.padY) / lb.scale
 
             detections += Detection(
                 bbox       = RectF(x1.coerceAtLeast(0f), y1.coerceAtLeast(0f),
@@ -162,27 +143,44 @@ class YoloDetector(
     // Pre / post-processing
     // -------------------------------------------------------------------------
 
-    private fun preprocess(bitmap: Bitmap): OnnxTensor {
-        val scaled  = Bitmap.createScaledBitmap(bitmap, inputSize, inputSize, true)
-        val n       = inputSize * inputSize
-        val buf     = FloatBuffer.allocate(3 * n)
-        val pixels  = IntArray(n)
-        scaled.getPixels(pixels, 0, inputSize, 0, 0, inputSize, inputSize)
+    private data class Letterbox(val scale: Float, val padX: Float, val padY: Float)
 
-        for (i in 0 until n) {
-            val px = pixels[i]
-            // RGBA bytes from CameraX/ImageReader land in ARGB_8888 as BGRA after
-            // copyPixelsFromBuffer, so getPixels() bits 0-7 hold the camera's Red
-            // and bits 16-23 hold the camera's Blue — swap them for YOLO (RGB order).
-            buf.put(i,           (px          and 0xFF) / 255f)  // R (in bitmap "Blue" slot)
-            buf.put(n + i,       ((px shr 8)  and 0xFF) / 255f)  // G (correct)
-            buf.put(2 * n + i,   ((px shr 16) and 0xFF) / 255f)  // B (in bitmap "Red" slot)
+    private fun preprocess(bitmap: Bitmap): Pair<OnnxTensor, Letterbox> {
+        val origW  = bitmap.width
+        val origH  = bitmap.height
+        val scale  = minOf(inputSize.toFloat() / origW, inputSize.toFloat() / origH)
+        val fitW   = (origW * scale).toInt()
+        val fitH   = (origH * scale).toInt()
+        val padX   = (inputSize - fitW) / 2f
+        val padY   = (inputSize - fitH) / 2f
+
+        val scaled  = Bitmap.createScaledBitmap(bitmap, fitW, fitH, true)
+        val pixels  = IntArray(fitW * fitH)
+        scaled.getPixels(pixels, 0, fitW, 0, 0, fitW, fitH)
+        if (scaled !== bitmap) scaled.recycle()
+
+        val n   = inputSize * inputSize
+        val buf = FloatBuffer.allocate(3 * n)  // zero-filled → black padding
+
+        val padXi = padX.toInt()
+        val padYi = padY.toInt()
+        for (row in 0 until fitH) {
+            for (col in 0 until fitW) {
+                val px  = pixels[row * fitW + col]
+                // CameraX/ImageReader RGBA data landed in ARGB_8888 via copyPixelsFromBuffer
+                // with R and B swapped: bits 0-7 = camera R, bits 16-23 = camera B.
+                val dst = (row + padYi) * inputSize + (col + padXi)
+                buf.put(dst,         (px          and 0xFF) / 255f)  // R
+                buf.put(n + dst,     ((px shr 8)  and 0xFF) / 255f)  // G
+                buf.put(2 * n + dst, ((px shr 16) and 0xFF) / 255f)  // B
+            }
         }
 
-        return OnnxTensor.createTensor(
+        val tensor = OnnxTensor.createTensor(
             env, buf,
             longArrayOf(1, 3, inputSize.toLong(), inputSize.toLong()),
         )
+        return tensor to Letterbox(scale, padX, padY)
     }
 
     private fun nms(dets: List<Detection>): List<Detection> {
