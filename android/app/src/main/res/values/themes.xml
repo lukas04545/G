@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.YoloDetect" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">#00CC44</item>
+        <item name="colorPrimaryVariant">#008822</item>
+        <item name="colorOnPrimary">#000000</item>
+        <item name="android:windowBackground">#000000</item>
+    </style>
+</resources>
