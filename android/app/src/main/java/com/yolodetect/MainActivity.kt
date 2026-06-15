@@ -265,6 +265,9 @@ class MainActivity : AppCompatActivity() {
             detector?.close()
             detector = null
             try {
+                withContext(Dispatchers.Main) {
+                    binding.statsText.text = "Compiling for APU… (first launch only, please wait)"
+                }
                 val d = YoloDetector(
                     applicationContext,
                     modelFileName        = modelFile,
