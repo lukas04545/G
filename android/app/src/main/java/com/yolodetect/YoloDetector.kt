@@ -4,12 +4,10 @@ import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import ai.onnxruntime.TensorInfo
-import ai.onnxruntime.providers.NNAPIFlags
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.RectF
 import java.nio.FloatBuffer
-import java.util.EnumSet
 
 class YoloDetector(
     private val context: Context,
@@ -41,9 +39,7 @@ class YoloDetector(
             // FP16 speeds up NNAPI compilation on MediaTek APUs; USE_NCHW avoids
             // format-conversion overhead since YOLO tensors are already NCHW.
             // Wrapped in runCatching so devices without NNAPI fall back to CPU.
-            runCatching {
-                addNnapi(EnumSet.of(NNAPIFlags.USE_FP16, NNAPIFlags.USE_NCHW))
-            }
+            runCatching { addNnapi() }
         }
         session   = env.createSession(bytes, opts)
         inputName = session.inputNames.iterator().next()
