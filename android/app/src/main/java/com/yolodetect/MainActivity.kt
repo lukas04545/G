@@ -44,7 +44,8 @@ class MainActivity : AppCompatActivity() {
     // Current settings (kept in sync with UI)
     private var useQualityModel = true   // true = 640, false = 320
     private var personOnly      = false
-    private var confidence      = 0.5f
+    private var debugMode       = false
+    private var confidence      = 0.20f
 
     private var lastFrameMs = System.currentTimeMillis()
     private var frameCount  = 0
@@ -88,6 +89,15 @@ class MainActivity : AppCompatActivity() {
         binding.switchPersonOnly.setOnCheckedChangeListener { _, checked ->
             personOnly = checked
             onSettingsChanged()
+        }
+
+        // Debug switch
+        binding.switchDebug.setOnCheckedChangeListener { _, checked ->
+            debugMode = checked
+            // Debug ignores personOnly and confidence — reflect that in label
+            binding.confidenceLabel.text =
+                if (checked) "Confidence: ${(confidence * 100).toInt()}%  [DEBUG — showing top 10 raw]"
+                else "Confidence: ${(confidence * 100).toInt()}%"
         }
 
         // Confidence slider
@@ -217,7 +227,10 @@ class MainActivity : AppCompatActivity() {
 
         inferenceScope.launch {
             val t0   = System.currentTimeMillis()
-            val dets = runCatching { detector!!.detect(bmp) }.getOrDefault(emptyList())
+            val dets = runCatching {
+                if (debugMode) detector!!.debugTopScores(bmp)
+                else detector!!.detect(bmp)
+            }.getOrDefault(emptyList())
             val ms   = System.currentTimeMillis() - t0
             frameCount++
             avgLatencyMs += (ms - avgLatencyMs) / frameCount
@@ -226,10 +239,15 @@ class MainActivity : AppCompatActivity() {
             withContext(Dispatchers.Main) {
                 binding.boundingBoxView.setDetections(dets, bmp.width, bmp.height)
                 val model = if (useQualityModel) "640" else "320"
+                val suffix = when {
+                    debugMode  -> " DEBUG"
+                    personOnly -> " person"
+                    else       -> ""
+                }
+                val topScore = dets.maxOfOrNull { it.confidence } ?: 0f
                 binding.statsText.text =
-                    "FPS:%.1f  Lat:%dms  Obj:%d  [%s%s]".format(
-                        fps, ms, dets.size, model,
-                        if (personOnly) " person" else "",
+                    "FPS:%.1f  Lat:%dms  Obj:%d  top:%.0f%%  [%s%s]".format(
+                        fps, ms, dets.size, topScore * 100, model, suffix,
                     )
             }
         }

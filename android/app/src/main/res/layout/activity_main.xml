@@ -104,7 +104,7 @@
             android:id="@+id/confidenceLabel"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Confidence: 50%"
+            android:text="Confidence: 20%"
             android:textColor="#AAAAAA"
             android:textSize="12sp"
             android:layout_marginTop="4dp" />
@@ -113,10 +113,20 @@
             android:id="@+id/confidenceSlider"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:valueFrom="10"
-            android:valueTo="90"
-            android:value="50"
+            android:valueFrom="5"
+            android:valueTo="95"
+            android:value="20"
             android:stepSize="5" />
+
+        <!-- Debug toggle: show raw top scores even below threshold -->
+        <com.google.android.material.switchmaterial.SwitchMaterial
+            android:id="@+id/switchDebug"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="Debug: show top scores"
+            android:textColor="#AAAAAA"
+            android:textSize="11sp" />
 
         <!-- Screen / Camera toggle -->
         <Button
