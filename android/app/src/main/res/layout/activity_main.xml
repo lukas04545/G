@@ -6,7 +6,6 @@
     android:layout_height="match_parent"
     android:background="@android:color/black">
 
-    <!-- Camera preview -->
     <androidx.camera.view.PreviewView
         android:id="@+id/previewView"
         android:layout_width="0dp"
@@ -16,7 +15,6 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
-    <!-- Bounding box overlay for camera mode -->
     <com.yolodetect.BoundingBoxView
         android:id="@+id/boundingBoxView"
         android:layout_width="0dp"
@@ -26,19 +24,19 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
-    <!-- Bottom control panel -->
+    <!-- ── Control panel ── -->
     <LinearLayout
         android:id="@+id/controlPanel"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:background="#DD000000"
-        android:padding="12dp"
+        android:background="#EE111111"
+        android:padding="10dp"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent">
 
-        <!-- Stats row -->
+        <!-- Stats -->
         <TextView
             android:id="@+id/statsText"
             android:layout_width="wrap_content"
@@ -48,15 +46,68 @@
             android:textSize="12sp"
             android:fontFamily="monospace" />
 
+        <!-- Model quality row -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Model: "
+                android:textColor="#AAAAAA"
+                android:textSize="12sp" />
+
+            <RadioGroup
+                android:id="@+id/modelQualityGroup"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <RadioButton
+                    android:id="@+id/rbQuality"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Quality (640)"
+                    android:textColor="#CCCCCC"
+                    android:textSize="12sp"
+                    android:checked="true" />
+
+                <RadioButton
+                    android:id="@+id/rbFast"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Fast (320)"
+                    android:textColor="#CCCCCC"
+                    android:textSize="12sp"
+                    android:layout_marginStart="10dp" />
+
+            </RadioGroup>
+
+            <!-- Person-only toggle -->
+            <com.google.android.material.switchmaterial.SwitchMaterial
+                android:id="@+id/switchPersonOnly"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:text="Person only"
+                android:textColor="#CCCCCC"
+                android:textSize="12sp" />
+
+        </LinearLayout>
+
         <!-- Confidence slider -->
         <TextView
             android:id="@+id/confidenceLabel"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="Confidence: 50%"
-            android:textColor="#CCCCCC"
+            android:textColor="#AAAAAA"
             android:textSize="12sp"
-            android:layout_marginTop="6dp" />
+            android:layout_marginTop="4dp" />
 
         <com.google.android.material.slider.Slider
             android:id="@+id/confidenceSlider"
@@ -67,14 +118,14 @@
             android:value="50"
             android:stepSize="5" />
 
-        <!-- Mode toggle -->
+        <!-- Screen / Camera toggle -->
         <Button
             android:id="@+id/btnToggleMode"
             android:layout_width="match_parent"
-            android:layout_height="40dp"
+            android:layout_height="38dp"
             android:text="Switch to Screen Mode"
-            android:textSize="13sp"
-            android:layout_marginTop="6dp" />
+            android:textSize="12sp"
+            android:layout_marginTop="4dp" />
 
     </LinearLayout>
 

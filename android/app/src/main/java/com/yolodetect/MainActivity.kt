@@ -25,10 +25,13 @@ import java.util.concurrent.Executors
 class MainActivity : AppCompatActivity() {
 
     companion object {
-        private const val TAG = "YoloDetect"
-        private const val REQ_CAMERA   = 10
-        private const val REQ_OVERLAY  = 11
-        private const val REQ_CAPTURE  = 12
+        private const val TAG        = "YoloDetect"
+        private const val REQ_CAMERA  = 10
+        private const val REQ_OVERLAY = 11
+        private const val REQ_CAPTURE = 12
+
+        private const val MODEL_QUALITY = "yolov8n.onnx"
+        private const val MODEL_FAST    = "yolov8n_fast.onnx"
     }
 
     private lateinit var binding: ActivityMainBinding
@@ -36,14 +39,16 @@ class MainActivity : AppCompatActivity() {
     private val inferenceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     private var detector: YoloDetector? = null
-    private var frameWidth  = YoloDetector.INPUT_SIZE
-    private var frameHeight = YoloDetector.INPUT_SIZE
+    private var screenMode = false
+
+    // Current settings (kept in sync with UI)
+    private var useQualityModel = true   // true = 640, false = 320
+    private var personOnly      = false
+    private var confidence      = 0.5f
+
     private var lastFrameMs = System.currentTimeMillis()
     private var frameCount  = 0
     private var avgLatencyMs = 0.0
-
-    // Current mode
-    private var screenMode = false
 
     // -------------------------------------------------------------------------
     // Lifecycle
@@ -55,19 +60,9 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
         cameraExecutor = Executors.newSingleThreadExecutor()
 
-        // Mode toggle button
-        binding.btnToggleMode.setOnClickListener { toggleMode() }
-        // Confidence slider wires into the detector live
-        binding.confidenceSlider.addOnChangeListener { _, value, _ ->
-            detector?.let {
-                // rebuild detector with new threshold for camera mode
-                if (!screenMode) reloadDetector(value / 100f)
-            }
-            binding.confidenceLabel.text = "Confidence: ${value.toInt()}%"
-        }
-
-        loadDetector(binding.confidenceSlider.value / 100f)
-        startCameraMode()  // start in camera mode by default
+        wireControls()
+        loadDetector()
+        startCameraMode()
     }
 
     override fun onDestroy() {
@@ -75,29 +70,65 @@ class MainActivity : AppCompatActivity() {
         inferenceScope.cancel()
         cameraExecutor.shutdown()
         detector?.close()
-        // Make sure overlay service is stopped when activity is closed
         stopService(Intent(this, OverlayService::class.java))
+    }
+
+    // -------------------------------------------------------------------------
+    // UI wiring
+    // -------------------------------------------------------------------------
+
+    private fun wireControls() {
+        // Quality / Fast toggle
+        binding.modelQualityGroup.setOnCheckedChangeListener { _, id ->
+            useQualityModel = (id == R.id.rbQuality)
+            onSettingsChanged()
+        }
+
+        // Person-only switch
+        binding.switchPersonOnly.setOnCheckedChangeListener { _, checked ->
+            personOnly = checked
+            onSettingsChanged()
+        }
+
+        // Confidence slider
+        binding.confidenceSlider.addOnChangeListener { _, value, _ ->
+            confidence = value / 100f
+            binding.confidenceLabel.text = "Confidence: ${value.toInt()}%"
+            onSettingsChanged()
+        }
+
+        // Camera ↔ Screen mode button
+        binding.btnToggleMode.setOnClickListener {
+            if (!screenMode) switchToScreenMode() else switchToCameraMode()
+        }
+    }
+
+    private fun onSettingsChanged() {
+        if (screenMode) {
+            // Restart the overlay service with new settings
+            stopService(Intent(this, OverlayService::class.java))
+            // Re-request screen capture permission flow
+            val mgr = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            startActivityForResult(mgr.createScreenCaptureIntent(), REQ_CAPTURE)
+        } else {
+            // Reload detector for camera mode
+            loadDetector()
+        }
     }
 
     // -------------------------------------------------------------------------
     // Mode switching
     // -------------------------------------------------------------------------
 
-    private fun toggleMode() {
-        if (!screenMode) switchToScreenMode() else switchToCameraMode()
-    }
-
     private fun switchToScreenMode() {
-        // 1. Need SYSTEM_ALERT_WINDOW
         if (!Settings.canDrawOverlays(this)) {
-            Toast.makeText(this, "Grant 'Display over other apps' permission first", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Grant 'Display over other apps' first", Toast.LENGTH_LONG).show()
             startActivityForResult(
                 Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")),
                 REQ_OVERLAY,
             )
             return
         }
-        // 2. Request MediaProjection
         val mgr = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         startActivityForResult(mgr.createScreenCaptureIntent(), REQ_CAPTURE)
     }
@@ -105,37 +136,34 @@ class MainActivity : AppCompatActivity() {
     private fun switchToCameraMode() {
         screenMode = false
         binding.btnToggleMode.text = "Switch to Screen Mode"
-        binding.previewView.visibility = android.view.View.VISIBLE
+        binding.previewView.visibility  = android.view.View.VISIBLE
         binding.boundingBoxView.visibility = android.view.View.VISIBLE
         stopService(Intent(this, OverlayService::class.java))
-        startCameraMode()
+        loadDetector()
+        bindCamera()
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         when (requestCode) {
-            REQ_OVERLAY -> {
-                if (Settings.canDrawOverlays(this)) switchToScreenMode()
-                else Toast.makeText(this, "Permission denied", Toast.LENGTH_SHORT).show()
-            }
+            REQ_OVERLAY -> if (Settings.canDrawOverlays(this)) switchToScreenMode()
             REQ_CAPTURE -> {
                 if (resultCode == Activity.RESULT_OK && data != null) {
                     screenMode = true
                     binding.btnToggleMode.text = "Switch to Camera Mode"
-                    binding.previewView.visibility = android.view.View.GONE
-                    binding.boundingBoxView.visibility = android.view.View.GONE
-                    binding.statsText.text = "Screen mode active — switch apps to play"
+                    binding.previewView.visibility      = android.view.View.GONE
+                    binding.boundingBoxView.visibility  = android.view.View.GONE
+                    binding.statsText.text = "Screen mode — switch to your game"
 
-                    val confidence = binding.confidenceSlider.value / 100f
-                    // Must use startForegroundService on Android 8+ for services
-                    // that call startForeground(), otherwise the OS kills them
-                    androidx.core.content.ContextCompat.startForegroundService(
+                    ContextCompat.startForegroundService(
                         this,
                         Intent(this, OverlayService::class.java)
                             .setAction(OverlayService.ACTION_START)
                             .putExtra(OverlayService.EXTRA_RESULT_CODE, resultCode)
                             .putExtra(OverlayService.EXTRA_RESULT_DATA, data)
-                            .putExtra(OverlayService.EXTRA_CONFIDENCE, confidence)
+                            .putExtra(OverlayService.EXTRA_CONFIDENCE,  confidence)
+                            .putExtra(OverlayService.EXTRA_MODEL,        currentModelFile())
+                            .putExtra(OverlayService.EXTRA_PERSON_ONLY,  personOnly),
                     )
                 }
             }
@@ -154,7 +182,7 @@ class MainActivity : AppCompatActivity() {
         val future = ProcessCameraProvider.getInstance(this)
         future.addListener({
             val provider = future.get()
-            val preview = Preview.Builder().build().also {
+            val preview  = Preview.Builder().build().also {
                 it.setSurfaceProvider(binding.previewView.surfaceProvider)
             }
             val analysis = ImageAnalysis.Builder()
@@ -172,40 +200,37 @@ class MainActivity : AppCompatActivity() {
                 .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                 .build()
                 .also { it.setAnalyzer(cameraExecutor, ::analyzeFrame) }
-
             try {
                 provider.unbindAll()
                 provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
-            } catch (e: Exception) {
-                Log.e(TAG, "Camera bind failed", e)
-            }
+            } catch (e: Exception) { Log.e(TAG, "Camera bind failed", e) }
         }, ContextCompat.getMainExecutor(this))
     }
 
     private fun analyzeFrame(proxy: ImageProxy) {
         if (screenMode || detector == null) { proxy.close(); return }
-        val bitmap: Bitmap
+        val bmp: Bitmap
         try {
-            bitmap = Bitmap.createBitmap(proxy.width, proxy.height, Bitmap.Config.ARGB_8888)
-            bitmap.copyPixelsFromBuffer(proxy.planes[0].buffer)
+            bmp = Bitmap.createBitmap(proxy.width, proxy.height, Bitmap.Config.ARGB_8888)
+            bmp.copyPixelsFromBuffer(proxy.planes[0].buffer)
         } finally { proxy.close() }
 
-        frameWidth  = bitmap.width
-        frameHeight = bitmap.height
-
         inferenceScope.launch {
-            val t0 = System.currentTimeMillis()
-            val dets = runCatching { detector!!.detect(bitmap) }.getOrDefault(emptyList())
-            val elapsed = System.currentTimeMillis() - t0
+            val t0   = System.currentTimeMillis()
+            val dets = runCatching { detector!!.detect(bmp) }.getOrDefault(emptyList())
+            val ms   = System.currentTimeMillis() - t0
             frameCount++
-            avgLatencyMs += (elapsed - avgLatencyMs) / frameCount
+            avgLatencyMs += (ms - avgLatencyMs) / frameCount
             val fps = 1000.0 / (System.currentTimeMillis() - lastFrameMs).coerceAtLeast(1)
             lastFrameMs = System.currentTimeMillis()
-
             withContext(Dispatchers.Main) {
-                binding.boundingBoxView.setDetections(dets, frameWidth, frameHeight)
+                binding.boundingBoxView.setDetections(dets, bmp.width, bmp.height)
+                val model = if (useQualityModel) "640" else "320"
                 binding.statsText.text =
-                    "FPS: %.1f  |  Latency: %dms  |  Objects: %d".format(fps, elapsed, dets.size)
+                    "FPS:%.1f  Lat:%dms  Obj:%d  [%s%s]".format(
+                        fps, ms, dets.size, model,
+                        if (personOnly) " person" else "",
+                    )
             }
         }
     }
@@ -214,28 +239,31 @@ class MainActivity : AppCompatActivity() {
     // Detector
     // -------------------------------------------------------------------------
 
-    private fun loadDetector(confidence: Float) {
+    private fun currentModelFile() = if (useQualityModel) MODEL_QUALITY else MODEL_FAST
+
+    private fun loadDetector() {
+        val modelFile = currentModelFile()
         inferenceScope.launch {
+            detector?.close()
+            detector = null
             try {
-                val d = YoloDetector(applicationContext, confidenceThreshold = confidence)
+                val d = YoloDetector(
+                    applicationContext,
+                    modelFileName        = modelFile,
+                    confidenceThreshold  = confidence,
+                    personOnly           = personOnly,
+                )
                 d.load()
                 detector = d
                 withContext(Dispatchers.Main) {
-                    binding.statsText.text = "Model ready"
+                    binding.statsText.text =
+                        "Ready — ${d.inputSize}×${d.inputSize} model${if (personOnly) " (person only)" else ""}"
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Model load failed", e)
-                withContext(Dispatchers.Main) {
-                    binding.statsText.text = "Error: ${e.message}"
-                }
+                withContext(Dispatchers.Main) { binding.statsText.text = "Error: ${e.message}" }
             }
         }
-    }
-
-    private fun reloadDetector(confidence: Float) {
-        detector?.close()
-        detector = null
-        loadDetector(confidence)
     }
 
     // -------------------------------------------------------------------------

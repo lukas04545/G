@@ -23,6 +23,8 @@ class OverlayService : Service() {
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_RESULT_DATA = "result_data"
         const val EXTRA_CONFIDENCE  = "confidence"
+        const val EXTRA_MODEL       = "model"
+        const val EXTRA_PERSON_ONLY = "person_only"
         private const val NOTIF_ID   = 1
         private const val CHANNEL_ID = "yolo_overlay"
     }
@@ -83,14 +85,16 @@ class OverlayService : Service() {
                 intent.getParcelableExtra(EXTRA_RESULT_DATA, Intent::class.java)
             else
                 @Suppress("DEPRECATION") intent.getParcelableExtra(EXTRA_RESULT_DATA)
-        val confidence = intent.getFloatExtra(EXTRA_CONFIDENCE, 0.5f)
+        val confidence  = intent.getFloatExtra(EXTRA_CONFIDENCE, 0.5f)
+        val modelFile   = intent.getStringExtra(EXTRA_MODEL) ?: "yolov8n.onnx"
+        val personOnly  = intent.getBooleanExtra(EXTRA_PERSON_ONLY, false)
 
         if (resultCode != Activity.RESULT_OK || resultData == null) {
             Log.e(TAG, "Bad projection result ($resultCode)")
             stopSelf(); return START_NOT_STICKY
         }
 
-        startCapture(resultCode, resultData, confidence)
+        startCapture(resultCode, resultData, confidence, modelFile, personOnly)
         return START_NOT_STICKY
     }
 
@@ -112,7 +116,8 @@ class OverlayService : Service() {
     // Capture setup
     // -------------------------------------------------------------------------
 
-    private fun startCapture(resultCode: Int, data: Intent, confidence: Float) {
+    private fun startCapture(resultCode: Int, data: Intent, confidence: Float,
+                             modelFile: String, personOnly: Boolean) {
         val projMgr = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         mediaProjection = runCatching {
             projMgr.getMediaProjection(resultCode, data).also {
@@ -136,7 +141,7 @@ class OverlayService : Service() {
         // Add overlay on main thread (we're already there via onStartCommand)
         runCatching { addOverlay() }.onFailure { Log.e(TAG, "addOverlay failed", it); stopSelf(); return }
 
-        launchDetectionLoop(confidence)
+        launchDetectionLoop(confidence, modelFile, personOnly)
     }
 
     // -------------------------------------------------------------------------
@@ -169,11 +174,15 @@ class OverlayService : Service() {
     // Detection loop
     // -------------------------------------------------------------------------
 
-    private fun launchDetectionLoop(confidence: Float) {
+    private fun launchDetectionLoop(confidence: Float, modelFile: String, personOnly: Boolean) {
         scope.launch {
             runCatching {
-                detector = YoloDetector(applicationContext, confidenceThreshold = confidence)
+                detector = YoloDetector(applicationContext,
+                    modelFileName       = modelFile,
+                    confidenceThreshold = confidence,
+                    personOnly          = personOnly)
                 detector!!.load()
+                Log.i(TAG, "Model: $modelFile  inputSize=${detector!!.inputSize}  personOnly=$personOnly")
                 Log.i(TAG, "Detector ready")
 
                 while (isActive) {

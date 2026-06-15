@@ -7,8 +7,10 @@ dist/
 build/
 .venv/
 *.pt
-*.onnx
 runs/
+# Ignore ONNX files everywhere except the Android assets bundle
+*.onnx
+!android/app/src/main/assets/*.onnx
 
 # Android build artifacts
 android/.gradle/
