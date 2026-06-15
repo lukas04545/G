@@ -1,39 +1,81 @@
 <?xml version="1.0" encoding="utf-8"?>
-<FrameLayout
+<androidx.constraintlayout.widget.ConstraintLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@android:color/black">
 
-    <!-- Full-screen camera preview -->
+    <!-- Camera preview -->
     <androidx.camera.view.PreviewView
         android:id="@+id/previewView"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toTopOf="@id/controlPanel"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
 
-    <!-- Bounding box overlay — sits directly above the preview -->
+    <!-- Bounding box overlay for camera mode -->
     <com.yolodetect.BoundingBoxView
         android:id="@+id/boundingBoxView"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        app:layout_constraintTop_toTopOf="@id/previewView"
+        app:layout_constraintBottom_toBottomOf="@id/previewView"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
 
-    <!-- HUD stats bar at the bottom -->
+    <!-- Bottom control panel -->
     <LinearLayout
-        android:layout_width="match_parent"
+        android:id="@+id/controlPanel"
+        android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:layout_gravity="bottom"
-        android:background="#AA000000"
         android:orientation="vertical"
-        android:padding="10dp">
+        android:background="#DD000000"
+        android:padding="12dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
 
+        <!-- Stats row -->
         <TextView
             android:id="@+id/statsText"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:fontFamily="monospace"
-            android:text="Loading model…"
+            android:text="Loading…"
             android:textColor="#00FF00"
-            android:textSize="13sp" />
+            android:textSize="12sp"
+            android:fontFamily="monospace" />
+
+        <!-- Confidence slider -->
+        <TextView
+            android:id="@+id/confidenceLabel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Confidence: 50%"
+            android:textColor="#CCCCCC"
+            android:textSize="12sp"
+            android:layout_marginTop="6dp" />
+
+        <com.google.android.material.slider.Slider
+            android:id="@+id/confidenceSlider"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:valueFrom="10"
+            android:valueTo="90"
+            android:value="50"
+            android:stepSize="5" />
+
+        <!-- Mode toggle -->
+        <Button
+            android:id="@+id/btnToggleMode"
+            android:layout_width="match_parent"
+            android:layout_height="40dp"
+            android:text="Switch to Screen Mode"
+            android:textSize="13sp"
+            android:layout_marginTop="6dp" />
+
     </LinearLayout>
 
-</FrameLayout>
+</androidx.constraintlayout.widget.ConstraintLayout>
