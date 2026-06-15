@@ -29,9 +29,7 @@ class MainActivity : AppCompatActivity() {
         private const val REQ_CAMERA  = 10
         private const val REQ_OVERLAY = 11
         private const val REQ_CAPTURE = 12
-
-        private const val MODEL_QUALITY = "yolov8n.onnx"
-        private const val MODEL_FAST    = "yolov8n_fast.onnx"
+        private const val MODEL_FILE  = "yolov8n_fast.onnx"
     }
 
     private lateinit var binding: ActivityMainBinding
@@ -41,14 +39,12 @@ class MainActivity : AppCompatActivity() {
     private var detector: YoloDetector? = null
     private var screenMode = false
 
-    // Current settings (kept in sync with UI)
-    private var useQualityModel = true   // true = 640, false = 320
-    private var personOnly      = false
-    private var debugMode       = false
-    private var confidence      = 0.20f
+    private var personOnly = false
+    private var debugMode  = false
+    private var confidence = 0.20f
 
-    private var lastFrameMs = System.currentTimeMillis()
-    private var frameCount  = 0
+    private var lastFrameMs  = System.currentTimeMillis()
+    private var frameCount   = 0
     private var avgLatencyMs = 0.0
 
     // -------------------------------------------------------------------------
@@ -79,35 +75,24 @@ class MainActivity : AppCompatActivity() {
     // -------------------------------------------------------------------------
 
     private fun wireControls() {
-        // Quality / Fast toggle
-        binding.modelQualityGroup.setOnCheckedChangeListener { _, id ->
-            useQualityModel = (id == R.id.rbQuality)
-            onSettingsChanged()
-        }
-
-        // Person-only switch
         binding.switchPersonOnly.setOnCheckedChangeListener { _, checked ->
             personOnly = checked
             onSettingsChanged()
         }
 
-        // Debug switch
         binding.switchDebug.setOnCheckedChangeListener { _, checked ->
             debugMode = checked
-            // Debug ignores personOnly and confidence — reflect that in label
             binding.confidenceLabel.text =
                 if (checked) "Confidence: ${(confidence * 100).toInt()}%  [DEBUG — showing top 10 raw]"
                 else "Confidence: ${(confidence * 100).toInt()}%"
         }
 
-        // Confidence slider
         binding.confidenceSlider.addOnChangeListener { _, value, _ ->
             confidence = value / 100f
             binding.confidenceLabel.text = "Confidence: ${value.toInt()}%"
             onSettingsChanged()
         }
 
-        // Camera ↔ Screen mode button
         binding.btnToggleMode.setOnClickListener {
             if (!screenMode) switchToScreenMode() else switchToCameraMode()
         }
@@ -115,13 +100,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun onSettingsChanged() {
         if (screenMode) {
-            // Restart the overlay service with new settings
             stopService(Intent(this, OverlayService::class.java))
-            // Re-request screen capture permission flow
             val mgr = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             startActivityForResult(mgr.createScreenCaptureIntent(), REQ_CAPTURE)
         } else {
-            // Reload detector for camera mode
             loadDetector()
         }
     }
@@ -146,7 +128,7 @@ class MainActivity : AppCompatActivity() {
     private fun switchToCameraMode() {
         screenMode = false
         binding.btnToggleMode.text = "Switch to Screen Mode"
-        binding.previewView.visibility  = android.view.View.VISIBLE
+        binding.previewView.visibility     = android.view.View.VISIBLE
         binding.boundingBoxView.visibility = android.view.View.VISIBLE
         stopService(Intent(this, OverlayService::class.java))
         loadDetector()
@@ -161,8 +143,8 @@ class MainActivity : AppCompatActivity() {
                 if (resultCode == Activity.RESULT_OK && data != null) {
                     screenMode = true
                     binding.btnToggleMode.text = "Switch to Camera Mode"
-                    binding.previewView.visibility      = android.view.View.GONE
-                    binding.boundingBoxView.visibility  = android.view.View.GONE
+                    binding.previewView.visibility     = android.view.View.GONE
+                    binding.boundingBoxView.visibility = android.view.View.GONE
                     binding.statsText.text = "Screen mode — switch to your game"
 
                     ContextCompat.startForegroundService(
@@ -172,7 +154,7 @@ class MainActivity : AppCompatActivity() {
                             .putExtra(OverlayService.EXTRA_RESULT_CODE, resultCode)
                             .putExtra(OverlayService.EXTRA_RESULT_DATA, data)
                             .putExtra(OverlayService.EXTRA_CONFIDENCE,  confidence)
-                            .putExtra(OverlayService.EXTRA_MODEL,        currentModelFile())
+                            .putExtra(OverlayService.EXTRA_MODEL,        MODEL_FILE)
                             .putExtra(OverlayService.EXTRA_PERSON_ONLY,  personOnly),
                     )
                 }
@@ -231,14 +213,13 @@ class MainActivity : AppCompatActivity() {
                 if (debugMode) detector!!.debugTopScores(bmp, swapRB = true)
                 else detector!!.detect(bmp, swapRB = true)
             }.getOrDefault(emptyList())
-            val ms   = System.currentTimeMillis() - t0
+            val ms  = System.currentTimeMillis() - t0
             frameCount++
             avgLatencyMs += (ms - avgLatencyMs) / frameCount
             val fps = 1000.0 / (System.currentTimeMillis() - lastFrameMs).coerceAtLeast(1)
             lastFrameMs = System.currentTimeMillis()
             withContext(Dispatchers.Main) {
                 binding.boundingBoxView.setDetections(dets, bmp.width, bmp.height)
-                val model = if (useQualityModel) "640" else "320"
                 val suffix = when {
                     debugMode  -> " DEBUG"
                     personOnly -> " person"
@@ -246,8 +227,8 @@ class MainActivity : AppCompatActivity() {
                 }
                 val topScore = dets.maxOfOrNull { it.confidence } ?: 0f
                 binding.statsText.text =
-                    "FPS:%.1f  Lat:%dms  Obj:%d  top:%.0f%%  [%s%s]".format(
-                        fps, ms, dets.size, topScore * 100, model, suffix,
+                    "FPS:%.1f  Lat:%dms  Obj:%d  top:%.0f%%  [320%s]".format(
+                        fps, ms, dets.size, topScore * 100, suffix,
                     )
             }
         }
@@ -257,10 +238,7 @@ class MainActivity : AppCompatActivity() {
     // Detector
     // -------------------------------------------------------------------------
 
-    private fun currentModelFile() = if (useQualityModel) MODEL_QUALITY else MODEL_FAST
-
     private fun loadDetector() {
-        val modelFile = currentModelFile()
         inferenceScope.launch {
             detector?.close()
             detector = null
@@ -270,9 +248,9 @@ class MainActivity : AppCompatActivity() {
                 }
                 val d = YoloDetector(
                     applicationContext,
-                    modelFileName        = modelFile,
-                    confidenceThreshold  = confidence,
-                    personOnly           = personOnly,
+                    modelFileName       = MODEL_FILE,
+                    confidenceThreshold = confidence,
+                    personOnly          = personOnly,
                 )
                 d.load()
                 detector = d

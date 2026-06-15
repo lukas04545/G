@@ -46,58 +46,15 @@
             android:textSize="12sp"
             android:fontFamily="monospace" />
 
-        <!-- Model quality row -->
-        <LinearLayout
-            android:layout_width="match_parent"
+        <!-- Person-only toggle -->
+        <com.google.android.material.switchmaterial.SwitchMaterial
+            android:id="@+id/switchPersonOnly"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:orientation="horizontal"
             android:layout_marginTop="6dp"
-            android:gravity="center_vertical">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Model: "
-                android:textColor="#AAAAAA"
-                android:textSize="12sp" />
-
-            <RadioGroup
-                android:id="@+id/modelQualityGroup"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal">
-
-                <RadioButton
-                    android:id="@+id/rbQuality"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Quality (640)"
-                    android:textColor="#CCCCCC"
-                    android:textSize="12sp"
-                    android:checked="true" />
-
-                <RadioButton
-                    android:id="@+id/rbFast"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Fast (320)"
-                    android:textColor="#CCCCCC"
-                    android:textSize="12sp"
-                    android:layout_marginStart="10dp" />
-
-            </RadioGroup>
-
-            <!-- Person-only toggle -->
-            <com.google.android.material.switchmaterial.SwitchMaterial
-                android:id="@+id/switchPersonOnly"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="12dp"
-                android:text="Person only"
-                android:textColor="#CCCCCC"
-                android:textSize="12sp" />
-
-        </LinearLayout>
+            android:text="Person only"
+            android:textColor="#CCCCCC"
+            android:textSize="12sp" />
 
         <!-- Confidence slider -->
         <TextView
