@@ -111,14 +111,13 @@ class YoloDetector(
 
         val n = INPUT_SIZE * INPUT_SIZE
         val buf = FloatBuffer.allocate(3 * n)
-        val r = buf.array(); val g = r; val b = r  // all same backing array — index by offset
 
         // Fill in CHW order: R plane, G plane, B plane
         for (i in 0 until n) {
             val px = pixels[i]
-            buf.put(i,       ((px shr 16) and 0xFF) / 255f)  // R
-            buf.put(n + i,   ((px shr 8)  and 0xFF) / 255f)  // G
-            buf.put(2 * n + i, (px and 0xFF)        / 255f)  // B
+            buf.put(i,           ((px shr 16) and 0xFF) / 255f)  // R
+            buf.put(n + i,       ((px shr 8)  and 0xFF) / 255f)  // G
+            buf.put(2 * n + i,   (px          and 0xFF) / 255f)  // B
         }
 
         return OnnxTensor.createTensor(env, buf, longArrayOf(1, 3, INPUT_SIZE.toLong(), INPUT_SIZE.toLong()))
