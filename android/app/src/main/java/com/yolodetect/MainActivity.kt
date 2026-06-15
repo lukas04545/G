@@ -127,7 +127,10 @@ class MainActivity : AppCompatActivity() {
                     binding.statsText.text = "Screen mode active — switch apps to play"
 
                     val confidence = binding.confidenceSlider.value / 100f
-                    startService(
+                    // Must use startForegroundService on Android 8+ for services
+                    // that call startForeground(), otherwise the OS kills them
+                    androidx.core.content.ContextCompat.startForegroundService(
+                        this,
                         Intent(this, OverlayService::class.java)
                             .setAction(OverlayService.ACTION_START)
                             .putExtra(OverlayService.EXTRA_RESULT_CODE, resultCode)

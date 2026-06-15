@@ -10,28 +10,25 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.*
 import android.util.DisplayMetrics
+import android.util.Log
 import android.view.*
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
 
-/**
- * Foreground service that:
- * 1. Captures the screen via MediaProjection
- * 2. Runs YoloDetector on each frame
- * 3. Draws a contrast-boost overlay via WindowManager
- */
 class OverlayService : Service() {
 
     companion object {
-        const val ACTION_START  = "com.yolodetect.START"
-        const val ACTION_STOP   = "com.yolodetect.STOP"
-        const val EXTRA_RESULT_CODE   = "result_code"
-        const val EXTRA_RESULT_DATA   = "result_data"
-        const val EXTRA_CONFIDENCE    = "confidence"
-        private const val NOTIF_ID    = 1
-        private const val CHANNEL_ID  = "yolo_overlay"
+        private const val TAG = "OverlayService"
+        const val ACTION_START       = "com.yolodetect.START"
+        const val ACTION_STOP        = "com.yolodetect.STOP"
+        const val EXTRA_RESULT_CODE  = "result_code"
+        const val EXTRA_RESULT_DATA  = "result_data"
+        const val EXTRA_CONFIDENCE   = "confidence"
+        private const val NOTIF_ID   = 1
+        private const val CHANNEL_ID = "yolo_overlay"
     }
 
+    private val mainHandler = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     private var mediaProjection: MediaProjection? = null
@@ -41,7 +38,16 @@ class OverlayService : Service() {
     private var detector: YoloDetector? = null
 
     private lateinit var windowManager: WindowManager
-    private lateinit var metrics: DisplayMetrics
+    private var screenW = 0
+    private var screenH = 0
+
+    // Stop the projection cleanly if Android revokes it (e.g. on some OEM ROMs)
+    private val projectionCallback = object : MediaProjection.Callback() {
+        override fun onStop() {
+            Log.i(TAG, "MediaProjection stopped externally")
+            stopSelf()
+        }
+    }
 
     // -------------------------------------------------------------------------
     // Lifecycle
@@ -50,31 +56,45 @@ class OverlayService : Service() {
     override fun onCreate() {
         super.onCreate()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-        metrics = DisplayMetrics()
+        val metrics = DisplayMetrics()
         @Suppress("DEPRECATION")
         windowManager.defaultDisplay.getRealMetrics(metrics)
+        screenW = metrics.widthPixels
+        screenH = metrics.heightPixels
         createNotificationChannel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_START -> {
-                val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
-                val resultData = intent.getParcelableExtra<Intent>(EXTRA_RESULT_DATA)!!
-                val confidence = intent.getFloatExtra(EXTRA_CONFIDENCE, 0.5f)
-                startForeground(NOTIF_ID, buildNotification())
-                startCapture(resultCode, resultData, confidence)
-            }
-            ACTION_STOP -> stopSelf()
+        if (intent?.action == ACTION_STOP) { stopSelf(); return START_NOT_STICKY }
+        if (intent?.action != ACTION_START) return START_NOT_STICKY
+
+        // Must call startForeground before doing any projection work on Android 10+
+        startForeground(NOTIF_ID, buildNotification())
+
+        val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
+        val resultData: Intent? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+            intent.getParcelableExtra(EXTRA_RESULT_DATA, Intent::class.java)
+        else
+            @Suppress("DEPRECATION") intent.getParcelableExtra(EXTRA_RESULT_DATA)
+        val confidence = intent.getFloatExtra(EXTRA_CONFIDENCE, 0.5f)
+
+        if (resultCode == Activity.RESULT_CANCELED || resultData == null) {
+            Log.e(TAG, "Invalid projection result — stopping")
+            stopSelf()
+            return START_NOT_STICKY
         }
+
+        startCapture(resultCode, resultData, confidence)
         return START_NOT_STICKY
     }
 
     override fun onDestroy() {
+        Log.i(TAG, "onDestroy")
         scope.cancel()
-        removeOverlay()
+        mainHandler.post { removeOverlay() }
         virtualDisplay?.release()
         imageReader?.close()
+        try { mediaProjection?.unregisterCallback(projectionCallback) } catch (_: Exception) {}
         mediaProjection?.stop()
         detector?.close()
         super.onDestroy()
@@ -83,89 +103,116 @@ class OverlayService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     // -------------------------------------------------------------------------
-    // Screen capture setup
+    // Capture setup  (runs on main thread via onStartCommand)
     // -------------------------------------------------------------------------
 
     private fun startCapture(resultCode: Int, data: Intent, confidence: Float) {
         val projMgr = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        mediaProjection = projMgr.getMediaProjection(resultCode, data)
+        try {
+            mediaProjection = projMgr.getMediaProjection(resultCode, data).also {
+                it.registerCallback(projectionCallback, mainHandler)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "getMediaProjection failed", e)
+            stopSelf(); return
+        }
 
-        val w = metrics.widthPixels
-        val h = metrics.heightPixels
-        val dpi = metrics.densityDpi
+        imageReader = ImageReader.newInstance(screenW, screenH, PixelFormat.RGBA_8888, 2)
 
-        imageReader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2)
+        try {
+            virtualDisplay = mediaProjection!!.createVirtualDisplay(
+                "YoloCapture", screenW, screenH,
+                resources.displayMetrics.densityDpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                imageReader!!.surface, null, mainHandler,
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "createVirtualDisplay failed", e)
+            stopSelf(); return
+        }
 
-        virtualDisplay = mediaProjection!!.createVirtualDisplay(
-            "YoloCapture", w, h, dpi,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            imageReader!!.surface, null, null,
-        )
-
-        addOverlay(w, h)
-        loadAndRun(confidence, w, h)
+        addOverlay()
+        launchDetectionLoop(confidence)
     }
 
     // -------------------------------------------------------------------------
-    // Overlay window
+    // Overlay window  (must be called on main thread)
     // -------------------------------------------------------------------------
 
-    private fun addOverlay(w: Int, h: Int) {
-        overlayView = OverlayView(this)
+    private fun addOverlay() {
+        val view = OverlayView(this)
         val params = WindowManager.LayoutParams(
-            w, h,
+            screenW, screenH,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                     or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                    or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                    or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                    or WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
             PixelFormat.TRANSLUCENT,
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
+        ).apply { gravity = Gravity.TOP or Gravity.START }
+        try {
+            windowManager.addView(view, params)
+            overlayView = view
+        } catch (e: Exception) {
+            Log.e(TAG, "addView failed", e)
+            stopSelf()
         }
-        windowManager.addView(overlayView, params)
     }
 
     private fun removeOverlay() {
-        overlayView?.let {
-            try { windowManager.removeView(it) } catch (_: Exception) {}
+        overlayView?.let { v ->
+            try { windowManager.removeView(v) } catch (_: Exception) {}
         }
         overlayView = null
     }
 
     // -------------------------------------------------------------------------
-    // Detection loop
+    // Detection loop  (runs on Dispatchers.Default)
     // -------------------------------------------------------------------------
 
-    private fun loadAndRun(confidence: Float, w: Int, h: Int) {
+    private fun launchDetectionLoop(confidence: Float) {
         scope.launch {
             try {
                 detector = YoloDetector(applicationContext, confidenceThreshold = confidence)
                 detector!!.load()
+                Log.i(TAG, "Detector ready, starting loop")
 
                 while (isActive) {
-                    val image = imageReader?.acquireLatestImage()
+                    val image = try {
+                        imageReader?.acquireLatestImage()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "acquireLatestImage: ${e.message}")
+                        null
+                    }
+
                     if (image == null) { delay(16); continue }
+
                     try {
                         val plane = image.planes[0]
-                        val bitmap = Bitmap.createBitmap(
-                            plane.rowStride / plane.pixelStride,
-                            h, Bitmap.Config.ARGB_8888,
-                        )
-                        bitmap.copyPixelsFromBuffer(plane.buffer)
+                        val rowStridePx = plane.rowStride / plane.pixelStride
 
-                        // Crop to actual screen width (row stride may be wider)
-                        val cropped = if (bitmap.width != w)
-                            Bitmap.createBitmap(bitmap, 0, 0, w, h) else bitmap
+                        val raw = Bitmap.createBitmap(rowStridePx, screenH, Bitmap.Config.ARGB_8888)
+                        raw.copyPixelsFromBuffer(plane.buffer)
 
-                        val dets = detector!!.detect(cropped)
-                        overlayView?.update(dets, w, h)
+                        // Trim padding columns if rowStride > actual width
+                        val frame = if (rowStridePx != screenW)
+                            Bitmap.createBitmap(raw, 0, 0, screenW, screenH)
+                        else raw
+
+                        val dets = detector!!.detect(frame)
+                        overlayView?.update(dets, screenW, screenH)
+
+                        if (rowStridePx != screenW) raw.recycle()
+                        frame.recycle()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Frame processing error: ${e.message}")
                     } finally {
                         image.close()
                     }
-                    delay(33) // ~30 fps cap
+                    delay(33)
                 }
             } catch (e: Exception) {
-                // Model missing or other fatal error — stop silently
+                Log.e(TAG, "Detection loop fatal error", e)
                 stopSelf()
             }
         }
@@ -181,16 +228,16 @@ class OverlayService : Service() {
     }
 
     private fun buildNotification(): Notification {
-        val stopPi = PendingIntent.getService(
+        val stopIntent = PendingIntent.getService(
             this, 0,
             Intent(this, OverlayService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_IMMUTABLE,
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("YOLO Contrast Enhance")
-            .setContentText("Highlighting detected objects on screen")
+            .setContentTitle("YOLO Contrast Enhance — running")
+            .setContentText("Tap Stop to disable the overlay")
             .setSmallIcon(android.R.drawable.ic_menu_camera)
-            .addAction(android.R.drawable.ic_delete, "Stop", stopPi)
+            .addAction(android.R.drawable.ic_delete, "Stop", stopIntent)
             .setOngoing(true)
             .build()
     }
