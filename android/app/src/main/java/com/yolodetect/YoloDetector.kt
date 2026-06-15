@@ -45,8 +45,8 @@ class YoloDetector(
     // Inference
     // -------------------------------------------------------------------------
 
-    fun debugTopScores(bitmap: Bitmap): List<Detection> {
-        val (tensor, lb) = preprocess(bitmap)
+    fun debugTopScores(bitmap: Bitmap, swapRB: Boolean = false): List<Detection> {
+        val (tensor, lb) = preprocess(bitmap, swapRB)
         val result = session.run(mapOf(inputName to tensor))
         val raw    = (result[0].value as Array<*>)[0] as Array<*>
         val numFeat = raw.size
@@ -94,14 +94,14 @@ class YoloDetector(
      * results with a global NMS pass. For a tall phone screen this gives ~2× better
      * effective resolution compared to squishing the full screen into one 640-px square.
      */
-    fun detectTiled(bitmap: Bitmap): List<Detection> {
+    fun detectTiled(bitmap: Bitmap, swapRB: Boolean = false): List<Detection> {
         val W = bitmap.width
         val H = bitmap.height
         val tileSize = minOf(W, H)
         val isPortrait = H > W
         val longLen = if (isPortrait) H else W
 
-        if (longLen <= tileSize) return detect(bitmap)
+        if (longLen <= tileSize) return detect(bitmap, swapRB)
 
         // 2 tiles for ratio ≤ 2.5, 3 tiles for taller screens
         val nTiles = if (longLen.toFloat() / tileSize <= 2.5f) 2 else 3
@@ -116,7 +116,7 @@ class YoloDetector(
 
             val offX = if (isPortrait) 0f else start.toFloat()
             val offY = if (isPortrait) start.toFloat() else 0f
-            detect(tile).forEach { det ->
+            detect(tile, swapRB).forEach { det ->
                 allDets += det.copy(bbox = RectF(
                     det.bbox.left  + offX, det.bbox.top    + offY,
                     det.bbox.right + offX, det.bbox.bottom + offY,
@@ -128,11 +128,11 @@ class YoloDetector(
         return nms(allDets)
     }
 
-    fun detect(bitmap: Bitmap): List<Detection> {
+    fun detect(bitmap: Bitmap, swapRB: Boolean = false): List<Detection> {
         val origW = bitmap.width.toFloat()
         val origH = bitmap.height.toFloat()
 
-        val (tensor, lb) = preprocess(bitmap)
+        val (tensor, lb) = preprocess(bitmap, swapRB)
         val result = session.run(mapOf(inputName to tensor))
 
         // Output shape: [1, 84, N]
@@ -184,7 +184,7 @@ class YoloDetector(
 
     private data class Letterbox(val scale: Float, val padX: Float, val padY: Float)
 
-    private fun preprocess(bitmap: Bitmap): Pair<OnnxTensor, Letterbox> {
+    private fun preprocess(bitmap: Bitmap, swapRB: Boolean): Pair<OnnxTensor, Letterbox> {
         val origW  = bitmap.width
         val origH  = bitmap.height
         val scale  = minOf(inputSize.toFloat() / origW, inputSize.toFloat() / origH)
@@ -206,12 +206,18 @@ class YoloDetector(
         for (row in 0 until fitH) {
             for (col in 0 until fitW) {
                 val px  = pixels[row * fitW + col]
-                // CameraX/ImageReader RGBA data landed in ARGB_8888 via copyPixelsFromBuffer
-                // with R and B swapped: bits 0-7 = camera R, bits 16-23 = camera B.
+                // CameraX RGBA buffers land in ARGB_8888 with R and B swapped (swapRB=true).
+                // MediaProjection BGRA buffers map correctly — no swap needed (swapRB=false).
                 val dst = (row + padYi) * inputSize + (col + padXi)
-                buf.put(dst,         (px          and 0xFF) / 255f)  // R
-                buf.put(n + dst,     ((px shr 8)  and 0xFF) / 255f)  // G
-                buf.put(2 * n + dst, ((px shr 16) and 0xFF) / 255f)  // B
+                if (swapRB) {
+                    buf.put(dst,         (px          and 0xFF) / 255f)  // R ← bits 0-7
+                    buf.put(n + dst,     ((px shr 8)  and 0xFF) / 255f)  // G
+                    buf.put(2 * n + dst, ((px shr 16) and 0xFF) / 255f)  // B ← bits 16-23
+                } else {
+                    buf.put(dst,         ((px shr 16) and 0xFF) / 255f)  // R ← bits 16-23
+                    buf.put(n + dst,     ((px shr 8)  and 0xFF) / 255f)  // G
+                    buf.put(2 * n + dst, (px          and 0xFF) / 255f)  // B ← bits 0-7
+                }
             }
         }
 

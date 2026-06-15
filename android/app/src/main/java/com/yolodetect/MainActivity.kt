@@ -228,8 +228,8 @@ class MainActivity : AppCompatActivity() {
         inferenceScope.launch {
             val t0   = System.currentTimeMillis()
             val dets = runCatching {
-                if (debugMode) detector!!.debugTopScores(bmp)
-                else detector!!.detect(bmp)
+                if (debugMode) detector!!.debugTopScores(bmp, swapRB = true)
+                else detector!!.detect(bmp, swapRB = true)
             }.getOrDefault(emptyList())
             val ms   = System.currentTimeMillis() - t0
             frameCount++
