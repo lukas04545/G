@@ -6,10 +6,8 @@ import android.view.View
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Full-screen transparent overlay.
- *
- * Runs in software mode so BlurMaskFilter works (hardware-accel silently
- * drops it). Safe to call update() from any thread.
+ * Full-screen transparent overlay drawn in software mode (required for BlurMaskFilter).
+ * Safe to call update() from any thread.
  */
 class OverlayView(context: Context) : View(context) {
 
@@ -22,25 +20,27 @@ class OverlayView(context: Context) : View(context) {
     private val frame = AtomicReference(Frame(emptyList(), 1f, 1f))
 
     init {
-        // Software layer is required for BlurMaskFilter; the overlay is
-        // transparent so there's no compositing cost penalty here.
         setLayerType(LAYER_TYPE_SOFTWARE, null)
     }
 
-    // Outer glow — wide, blurred halo
+    // Mask: outer glow
+    private val maskGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        maskFilter = BlurMaskFilter(30f, BlurMaskFilter.Blur.OUTER)
+    }
+
+    // Mask: filled silhouette
+    private val maskFillPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    // Fallback box paints (used when no mask is available)
     private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = 22f
         maskFilter = BlurMaskFilter(28f, BlurMaskFilter.Blur.OUTER)
     }
-
-    // Mid ring
     private val midPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = 6f
     }
-
-    // Inner crisp border
     private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = 2.5f
@@ -48,14 +48,14 @@ class OverlayView(context: Context) : View(context) {
     }
 
     // Label
-    private val tagBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val tagBgPaint   = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val tagTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         textSize = 34f
         typeface = Typeface.DEFAULT_BOLD
     }
 
-    // Debug counter (always shown so user knows the service is alive)
+    // HUD (always visible so user knows the overlay is active)
     private val hudPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.argb(200, 0, 255, 0)
         textSize = 30f
@@ -73,16 +73,13 @@ class OverlayView(context: Context) : View(context) {
     }
 
     override fun onDraw(canvas: Canvas) {
-        val f   = frame.get()
-        val vw  = width.toFloat()
-        val vh  = height.toFloat()
+        val f  = frame.get()
+        val vw = width.toFloat()
+        val vh = height.toFloat()
 
-        // Always draw a small HUD so the user can confirm the overlay is active
         canvas.drawText("YOLO ✓  ${f.detections.size} obj", 20f, 60f, hudPaint)
-
         if (f.detections.isEmpty()) return
 
-        // Scale factors from capture-space → view-space
         val sx = vw / f.srcW
         val sy = vh / f.srcH
 
@@ -92,31 +89,43 @@ class OverlayView(context: Context) : View(context) {
             val t = det.bbox.top    * sy
             val r = det.bbox.right  * sx
             val b = det.bbox.bottom * sy
-            val rect = RectF(l, t, r, b)
+            val dst = RectF(l, t, r, b)
 
-            // Glow
-            glowPaint.color = Color.argb(160, Color.red(color), Color.green(color), Color.blue(color))
-            canvas.drawRoundRect(rect, 10f, 10f, glowPaint)
+            if (det.mask != null) {
+                // Outer glow: draw mask at expanded rect with blur
+                val exp = 20f
+                maskGlowPaint.color = Color.argb(200,
+                    Color.red(color), Color.green(color), Color.blue(color))
+                canvas.drawBitmap(det.mask, null,
+                    RectF(l - exp, t - exp, r + exp, b + exp), maskGlowPaint)
 
-            // Mid ring
-            midPaint.color = color
-            canvas.drawRoundRect(rect, 10f, 10f, midPaint)
-
-            // Inner white border
-            canvas.drawRoundRect(rect, 10f, 10f, borderPaint)
+                // Filled silhouette
+                maskFillPaint.color = Color.argb(120,
+                    Color.red(color), Color.green(color), Color.blue(color))
+                canvas.drawBitmap(det.mask, null, dst, maskFillPaint)
+            } else {
+                // Fallback: glowing rounded rect
+                glowPaint.color = Color.argb(160,
+                    Color.red(color), Color.green(color), Color.blue(color))
+                canvas.drawRoundRect(dst, 10f, 10f, glowPaint)
+                midPaint.color = color
+                canvas.drawRoundRect(dst, 10f, 10f, midPaint)
+                canvas.drawRoundRect(dst, 10f, 10f, borderPaint)
+            }
 
             // Label
             val label = "${det.className} ${"%.0f".format(det.confidence * 100)}%"
             val tw = tagTextPaint.measureText(label)
             val th = tagTextPaint.textSize
             val tagT = if (t > th + 10) t - th - 10 else b + 4
-            tagBgPaint.color = Color.argb(200, Color.red(color), Color.green(color), Color.blue(color))
+            tagBgPaint.color = Color.argb(200,
+                Color.red(color), Color.green(color), Color.blue(color))
             canvas.drawRoundRect(l, tagT, l + tw + 14, tagT + th + 6, 5f, 5f, tagBgPaint)
             canvas.drawText(label, l + 7, tagT + th, tagTextPaint)
         }
     }
 
-    // Warm amber-orange palette — stands out on most game backgrounds
+    // Warm amber-orange palette — stands out on most backgrounds
     private fun glowColor(classId: Int) =
         Color.HSVToColor(floatArrayOf((20f + classId * 47f) % 60f + 5f, 1f, 1f))
 }

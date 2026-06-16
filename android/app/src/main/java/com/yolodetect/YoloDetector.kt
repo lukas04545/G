@@ -7,11 +7,13 @@ import ai.onnxruntime.TensorInfo
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.RectF
+import java.nio.ByteBuffer
 import java.nio.FloatBuffer
+import kotlin.math.exp
 
 class YoloDetector(
     private val context: Context,
-    val modelFileName: String      = "yolov8n.onnx",
+    val modelFileName: String      = "yolo11n_seg.onnx",
     val confidenceThreshold: Float = 0.5f,
     val iouThreshold: Float        = 0.45f,
     val personOnly: Boolean        = false,
@@ -37,7 +39,7 @@ class YoloDetector(
         val opts  = OrtSession.SessionOptions().apply {
             setIntraOpNumThreads(4)
             // XNNPACK: optimised ARM NEON kernels — pure CPU, no data-transfer overhead.
-            // Outperforms NNAPI on YOLOv8 because NNAPI can't handle all ops (Reshape/
+            // Outperforms NNAPI on YOLO because NNAPI can't handle all ops (Reshape/
             // Transpose bounce back to CPU, killing throughput with NNAPI).
             runCatching { addXnnpack(emptyMap()) }
         }
@@ -60,7 +62,7 @@ class YoloDetector(
 
         val bestPerClass = mutableMapOf<Int, Pair<Float, FloatArray>>()
         for (i in 0 until numDet) {
-            for (c in 4 until numFeat) {
+            for (c in 4 until minOf(84, numFeat)) {
                 val score = (raw[c] as FloatArray)[i]
                 val cls   = c - 4
                 val prev  = bestPerClass[cls]?.first ?: 0f
@@ -98,7 +100,7 @@ class YoloDetector(
     /**
      * Tiles the image along its long axis and runs [detect] on each tile, then merges
      * results with a global NMS pass. For a tall phone screen this gives ~2× better
-     * effective resolution compared to squishing the full screen into one 640-px square.
+     * effective resolution compared to squishing the full screen into one 320-px square.
      */
     fun detectTiled(bitmap: Bitmap, swapRB: Boolean = false): List<Detection> {
         val W = bitmap.width
@@ -109,7 +111,6 @@ class YoloDetector(
 
         if (longLen <= tileSize) return detect(bitmap, swapRB)
 
-        // 2 tiles for ratio ≤ 2.5, 3 tiles for taller screens
         val nTiles = if (longLen.toFloat() / tileSize <= 2.5f) 2 else 3
         val allDets = mutableListOf<Detection>()
 
@@ -141,48 +142,121 @@ class YoloDetector(
         val (tensor, lb) = preprocess(bitmap, swapRB)
         val result = session.run(mapOf(inputName to tensor))
 
-        // Output shape: [1, 84, N]
         val raw     = (result[0].value as Array<*>)[0] as Array<*>
         val numFeat = raw.size
         val numDet  = (raw[0] as FloatArray).size
+        // YOLO seg: 4 bbox + 80 classes + 32 mask coefficients = 116 features
+        val numMask = (numFeat - 84).coerceAtLeast(0)
+        val isSeg   = numMask > 0
 
-        val detections = mutableListOf<Detection>()
+        // Flatten prototype masks from [numMask, protoSize, protoSize] into Array<FloatArray>
+        val protoSize = inputSize / 4  // 80 for 320px model
+        val protos: Array<FloatArray>? = if (isSeg) {
+            val proto0 = (result[1].value as Array<*>)[0] as Array<*>
+            Array(numMask) { k ->
+                val rows = proto0[k] as Array<*>
+                FloatArray(protoSize * protoSize) { idx ->
+                    (rows[idx / protoSize] as FloatArray)[idx % protoSize]
+                }
+            }
+        } else null
 
+        // Parse anchors: collect detections with mask coefficients before closing result
+        val pre = mutableListOf<Pair<Detection, FloatArray?>>()
         for (i in 0 until numDet) {
-            val cx = (raw[0] as FloatArray)[i]
-            val cy = (raw[1] as FloatArray)[i]
-            val w  = (raw[2] as FloatArray)[i]
-            val h  = (raw[3] as FloatArray)[i]
+            val cx = (raw[0] as FloatArray)[i]; val cy = (raw[1] as FloatArray)[i]
+            val w  = (raw[2] as FloatArray)[i]; val h  = (raw[3] as FloatArray)[i]
 
-            var maxScore = 0f
-            var classId  = 0
-            for (c in 4 until numFeat) {
+            var maxScore = 0f; var classId = 0
+            for (c in 4 until 84) {
                 val s = (raw[c] as FloatArray)[i]
                 if (s > maxScore) { maxScore = s; classId = c - 4 }
             }
-
             if (maxScore < confidenceThreshold) continue
             if (personOnly && classId != CLASS_PERSON) continue
 
-            // Undo letterbox: subtract padding, divide by scale
             val x1 = ((cx - w / 2f) - lb.padX) / lb.scale
             val y1 = ((cy - h / 2f) - lb.padY) / lb.scale
             val x2 = ((cx + w / 2f) - lb.padX) / lb.scale
             val y2 = ((cy + h / 2f) - lb.padY) / lb.scale
 
-            detections += Detection(
-                bbox       = RectF(x1.coerceAtLeast(0f), y1.coerceAtLeast(0f),
-                                   x2.coerceAtMost(origW), y2.coerceAtMost(origH)),
-                confidence = maxScore,
-                classId    = classId,
-                className  = COCO_CLASSES.getOrElse(classId) { "cls$classId" },
+            val coeffs = if (isSeg) FloatArray(numMask) { k -> (raw[84 + k] as FloatArray)[i] } else null
+
+            pre += Pair(
+                Detection(
+                    bbox       = RectF(x1.coerceAtLeast(0f), y1.coerceAtLeast(0f),
+                                       x2.coerceAtMost(origW), y2.coerceAtMost(origH)),
+                    confidence = maxScore,
+                    classId    = classId,
+                    className  = COCO_CLASSES.getOrElse(classId) { "cls$classId" },
+                ),
+                coeffs,
             )
         }
 
-        tensor.close()
-        result.close()
-        return nms(detections)
+        tensor.close(); result.close()
+
+        // NMS — inline to keep coefficients paired with detections
+        val sorted     = pre.sortedByDescending { it.first.confidence }
+        val suppressed = BooleanArray(sorted.size)
+        val kept       = mutableListOf<Pair<Detection, FloatArray?>>()
+        for (i in sorted.indices) {
+            if (suppressed[i]) continue
+            kept += sorted[i]
+            for (j in i + 1 until sorted.size) {
+                if (!suppressed[j]
+                    && sorted[i].first.classId == sorted[j].first.classId
+                    && iou(sorted[i].first.bbox, sorted[j].first.bbox) > iouThreshold)
+                    suppressed[j] = true
+            }
+        }
+
+        // Compute masks only for the kept detections
+        return kept.map { (det, coeffs) ->
+            if (protos != null && coeffs != null)
+                det.copy(mask = computeMask(coeffs, protos, lb, det.bbox, protoSize))
+            else det
+        }
     }
+
+    // -------------------------------------------------------------------------
+    // Segmentation mask
+    // -------------------------------------------------------------------------
+
+    private fun computeMask(
+        coeffs: FloatArray,
+        protos: Array<FloatArray>,   // [numMask][protoSize²]
+        lb: Letterbox,
+        bboxOrig: RectF,
+        protoSize: Int,
+    ): Bitmap {
+        // Map bbox from original-image coords to prototype coords:
+        //   orig → model input: x_m = x_o * scale + padX
+        //   model input → proto: x_p = x_m * (protoSize / inputSize)
+        val mToP = protoSize.toFloat() / inputSize
+        val px1 = ((bboxOrig.left   * lb.scale + lb.padX) * mToP).toInt().coerceIn(0, protoSize)
+        val py1 = ((bboxOrig.top    * lb.scale + lb.padY) * mToP).toInt().coerceIn(0, protoSize)
+        val px2 = ((bboxOrig.right  * lb.scale + lb.padX) * mToP).toInt().coerceIn(0, protoSize)
+        val py2 = ((bboxOrig.bottom * lb.scale + lb.padY) * mToP).toInt().coerceIn(0, protoSize)
+        val mW  = (px2 - px1).coerceAtLeast(1)
+        val mH  = (py2 - py1).coerceAtLeast(1)
+
+        val bmp = Bitmap.createBitmap(mW, mH, Bitmap.Config.ALPHA_8)
+        val buf = ByteBuffer.allocate(mW * mH)
+        for (y in 0 until mH) {
+            for (x in 0 until mW) {
+                val pIdx = (py1 + y) * protoSize + (px1 + x)
+                var dot = 0f
+                for (k in coeffs.indices) dot += coeffs[k] * protos[k][pIdx]
+                buf.put(if (sigmoid(dot) > 0.5f) 255.toByte() else 0.toByte())
+            }
+        }
+        buf.rewind()
+        bmp.copyPixelsFromBuffer(buf)
+        return bmp
+    }
+
+    private fun sigmoid(x: Float) = 1f / (1f + exp(-x))
 
     // -------------------------------------------------------------------------
     // Pre / post-processing

@@ -29,7 +29,7 @@ class MainActivity : AppCompatActivity() {
         private const val REQ_CAMERA  = 10
         private const val REQ_OVERLAY = 11
         private const val REQ_CAPTURE = 12
-        private const val MODEL_FILE  = "yolov8n_fast.onnx"
+        private const val MODEL_FILE  = "yolo11n_seg.onnx"
     }
 
     private lateinit var binding: ActivityMainBinding
