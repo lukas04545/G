@@ -13,6 +13,12 @@ android {
         targetSdk 34
         versionCode 1
         versionName "1.0"
+
+        // Nothing Phone 2a (and virtually all modern Android phones) are ARM64.
+        // Dropping x86/x86_64/armeabi-v7a cuts ~48 MB from the ORT native library.
+        ndk {
+            abiFilters "arm64-v8a"
+        }
     }
 
     buildTypes {

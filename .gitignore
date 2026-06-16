@@ -16,6 +16,3 @@ runs/
 android/.gradle/
 android/app/build/
 android/local.properties
-
-# APK releases exceed GitHub's 100 MB limit when bundling the seg model
-releases/*.apk
