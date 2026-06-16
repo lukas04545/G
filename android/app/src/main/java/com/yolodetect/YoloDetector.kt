@@ -7,15 +7,19 @@ import ai.onnxruntime.TensorInfo
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.RectF
+import android.util.Log
+import ai.onnxruntime.providers.NNAPIFlags
+import java.io.File
+import java.util.EnumSet
 import java.nio.ByteBuffer
 import java.nio.FloatBuffer
 import kotlin.math.exp
 
 class YoloDetector(
     private val context: Context,
-    val modelFileName: String      = "yolo11n_seg.onnx",
+    val modelFileName: String      = "yolo11s_seg.onnx",
     val confidenceThreshold: Float = 0.5f,
-    val iouThreshold: Float        = 0.45f,
+    val iouThreshold: Float        = 0.30f,  // tighter than default to suppress partial-body duplicates
     val personOnly: Boolean        = false,
 ) : AutoCloseable {
 
@@ -35,18 +39,30 @@ class YoloDetector(
     // -------------------------------------------------------------------------
 
     fun load() {
-        val bytes = context.assets.open(modelFileName).readBytes()
-        val opts  = OrtSession.SessionOptions().apply {
-            setIntraOpNumThreads(4)
-            // XNNPACK: optimised ARM NEON kernels — pure CPU, no data-transfer overhead.
-            // Outperforms NNAPI on YOLO because NNAPI can't handle all ops (Reshape/
-            // Transpose bounce back to CPU, killing throughput with NNAPI).
-            runCatching { addXnnpack(emptyMap()) }
+        // Copy to filesDir so NNAPI can cache the compiled model by stable file path.
+        // On first run the NPU compilation adds a few seconds; subsequent runs use cache.
+        val modelFile = File(context.filesDir, modelFileName)
+        if (!modelFile.exists() || modelFile.length() == 0L) {
+            context.assets.open(modelFileName).use { it.copyTo(modelFile.outputStream()) }
+            Log.i("YoloDetector", "Copied $modelFileName to filesDir (${modelFile.length() / 1024} KB)")
         }
-        session   = env.createSession(bytes, opts)
+
+        val opts = OrtSession.SessionOptions().apply {
+            setIntraOpNumThreads(4)
+            // NNAPI gives the MediaTek APU access to the heavy conv layers (FP16 mode).
+            // Unsupported ops (Reshape/Transpose in the output head) automatically fall
+            // back to XNNPACK which uses ARM NEON kernels — best of both worlds.
+            runCatching {
+                addNnapi(EnumSet.of(NNAPIFlags.USE_FP16))
+            }.onFailure { Log.w("YoloDetector", "NNAPI unavailable: ${it.message}") }
+            runCatching { addXnnpack(emptyMap()) }
+                .onFailure { Log.w("YoloDetector", "XNNPACK unavailable: ${it.message}") }
+        }
+        session   = env.createSession(modelFile.absolutePath, opts)
         inputName = session.inputNames.iterator().next()
         val shape = (session.inputInfo[inputName]!!.info as TensorInfo).shape
         inputSize = shape[2].toInt()
+        Log.i("YoloDetector", "Loaded $modelFileName  inputSize=$inputSize")
     }
 
     // -------------------------------------------------------------------------
